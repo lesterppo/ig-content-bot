@@ -1,7 +1,16 @@
 name: Content bot
 
-# Daily: generate a portrait with Gemini, post it to Story + Feed,
-# then screen new comments/DMs and reply via a free NVIDIA model.
+# Daily: generate a portrait with web Gemini, post it to Story + Feed, then
+# screen new comments/DMs and reply via a free NVIDIA model.
+#
+# WHERE IT MUST RUN — read AGENTS.md before deploying:
+#   Instagram only allows *writes* (feed/story posts, comments, DM replies)
+#   from residential/mobile IPs. GitHub-hosted runners (Azure) get
+#   login_required / "Please wait a few minutes" on every write; reads like
+#   user_medias still work. Deploy a self-hosted runner on a residential
+#   connection and set the repo variable CI_RUNNER (e.g. "self-hosted").
+#   Without it the job still runs on ubuntu-latest: it generates the image and
+#   then logs every Instagram write as failed, instead of crashing.
 
 on:
   workflow_dispatch:
@@ -32,7 +41,8 @@ on:
         options: ["true", "false"]
 
   schedule:
-    # 01:30 UTC = 09:30 HKT, daily
+    # 01:30 UTC = 09:30 HKT, daily. Change it to an hour when the runner
+    # (the residential machine) is normally powered on.
     - cron: "30 1 * * *"
 
 concurrency:
@@ -44,21 +54,33 @@ permissions:
 
 jobs:
   content-bot:
-    runs-on: ubuntu-latest
+    # Repo variable CI_RUNNER selects the runner ("self-hosted" on a
+    # residential VM). Unset → ubuntu-latest (generation only, no IG writes).
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Install dependencies
         run: |
-          pip install -r automation/requirements.txt
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r automation/requirements.txt
           # hermes-gem-cli deps: web Gemini via cookies (no API key)
-          pip install gemini-webapi loguru
+          .venv/bin/pip install --quiet gemini-webapi loguru
           chmod +x automation/gemini-cli.py
+
+      - name: Refresh Gemini cookies from the local browser (self-hosted only)
+        # Google rotates __Secure-1PSIDTS every time the cookies are used, so a
+        # stored secret goes stale within a run or two. A self-hosted runner
+        # whose Firefox/Chrome is signed in to gemini.google.com can re-read
+        # them at the start of every run, which removes the staleness problem
+        # entirely. On GitHub-hosted runners this step fails harmlessly and the
+        # GEMINI_SID/GEMINI_TS secrets are used instead.
+        continue-on-error: true
+        run: |
+          .venv/bin/pip install --quiet browser_cookie3 || true
+          .venv/bin/python automation/gemini-cli.py --init --browser firefox
 
       - name: Restore Instagram session cache
         uses: actions/cache@v4
@@ -72,7 +94,7 @@ jobs:
 
       - name: Restore Instagram session from secret
         # The verified session lives in IG_SESSION_JSON so runners avoid
-        # password logins (which trigger challenges from datacenter IPs).
+        # password logins (which trigger challenges).
         env:
           IG_SESSION_JSON: ${{ secrets.IG_SESSION_JSON }}
         run: |
@@ -90,7 +112,7 @@ jobs:
           IG_SESSION_JSON: ${{ secrets.IG_SESSION_JSON }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           # Free NIM models (probed 2026-10-03). Comma-separated lists allowed;
-          # nemotron-3-super/mistral-nemotron/deepseek-v4-flash are now 410 EOL.
+          # nemotron-3-super/mistral-nemotron/deepseek-v4-flash are 410 EOL.
           NVIDIA_MODEL: z-ai/glm-5.3-flash,openai/gpt-oss-20b
           NVIDIA_FALLBACK_MODEL: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
           GEMINI_SID: ${{ secrets.GEMINI_SID }}
@@ -101,7 +123,7 @@ jobs:
           POST_TO_FEED: ${{ inputs.post_to_feed || 'true' }}
           POST_TO_STORY: ${{ inputs.post_to_story || 'true' }}
           ENGAGE: ${{ inputs.engage || 'true' }}
-        run: python automation/content_bot.py
+        run: .venv/bin/python automation/content_bot.py
 
       - name: Persist bookmark state
         run: |

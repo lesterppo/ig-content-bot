@@ -1,10 +1,12 @@
 name: CI probe
 
-# One-shot diagnostic for the runner environment. Answers three questions:
-#   1. Do GEMINI_SID/GEMINI_TS authenticate web Gemini from a GitHub runner?
-#   2. Does image generation work there?
-#   3. Which free NVIDIA models respond?
-# Dispatch manually; it never touches Instagram.
+# Environment diagnostics. Run this FIRST on any new machine before trusting a
+# scheduled run. It never posts anything public: the write probes like/unlike
+# and save/unsave the owner's own newest post and undo both immediately.
+#
+# Jobs:
+#   gemini    — do the Gemini cookies work here? can this machine generate an image?
+#   instagram — which Instagram surfaces can this machine reach? (read vs write)
 
 on:
   workflow_dispatch:
@@ -13,28 +15,31 @@ permissions:
   contents: read
 
 jobs:
-  probe:
-    runs-on: ubuntu-latest
+  gemini:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Install dependencies
         run: |
-          pip install gemini-webapi loguru
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet gemini-webapi loguru
+          .venv/bin/pip install --quiet browser_cookie3 || true
           chmod +x automation/gemini-cli.py
+
+      - name: Refresh cookies from the local browser (self-hosted only)
+        continue-on-error: true
+        run: .venv/bin/python automation/gemini-cli.py --init --browser firefox
 
       - name: Gemini account status
         env:
           GEMINI_SID: ${{ secrets.GEMINI_SID }}
           GEMINI_TS: ${{ secrets.GEMINI_TS }}
         run: |
-          echo "cookies present: SID=${#GEMINI_SID} chars TS=${#GEMINI_TS} chars"
-          python automation/gemini-cli.py --account-status || echo "account-status rc=$?"
+          echo "env cookies present: SID=${#GEMINI_SID} chars TS=${#GEMINI_TS} chars"
+          .venv/bin/python automation/gemini-cli.py --account-status || echo "account-status rc=$?"
 
       - name: Gemini image generation
         env:
@@ -42,41 +47,14 @@ jobs:
           GEMINI_TS: ${{ secrets.GEMINI_TS }}
         run: |
           mkdir -p /tmp/probe
-          python automation/gemini-cli.py --img "editorial test portrait, one subject" \
+          .venv/bin/python automation/gemini-cli.py --img "editorial test portrait, one subject" \
             --save-images /tmp/probe -o /tmp/probe/out || echo "image gen rc=$?"
           ls -la /tmp/probe || true
 
       - name: NVIDIA models
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-        run: |
-          python - <<'PY'
-          import json, os, urllib.request
-          key = os.environ.get("NVIDIA_API_KEY", "")
-          if not key:
-              print("NVIDIA_API_KEY missing")
-              raise SystemExit(0)
-          models = ["z-ai/glm-5.3-flash", "openai/gpt-oss-20b",
-                    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"]
-          for m in models:
-              body = {"model": m, "messages": [
-                  {"role": "system", "content": "Reply exactly: REPLY: ok"},
-                  {"role": "user", "content": "Comment by fan: love this!"}],
-                  "max_tokens": 200, "temperature": 0.5, "stream": False}
-              req = urllib.request.Request(
-                  "https://integrate.api.nvidia.com/v1/chat/completions",
-                  data=json.dumps(body).encode(),
-                  headers={"Authorization": "Bearer " + key,
-                           "Content-Type": "application/json"},
-                  method="POST")
-              try:
-                  with urllib.request.urlopen(req, timeout=90) as r:
-                      d = json.loads(r.read().decode())
-                  c = (d["choices"][0]["message"].get("content") or "").strip()
-                  print(f"{m}: OK {c[:60]!r}")
-              except Exception as e:
-                  print(f"{m}: FAIL {type(e).__name__}: {str(e)[:140]}")
-          PY
+        run: .venv/bin/python scripts/probe_nvidia.py
 
       - name: Upload generated image
         if: always()
@@ -87,22 +65,19 @@ jobs:
           if-no-files-found: warn
 
   instagram:
-    # Which Instagram surfaces can a datacenter runner reach with the stored
-    # session? Read-only; never logs in with the password.
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Install dependencies
-        run: pip install -r automation/requirements.txt
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r automation/requirements.txt
 
       - name: Instagram surface probe
         env:
           IG_USERNAME: ${{ secrets.IG_USERNAME }}
           IG_SESSION_JSON: ${{ secrets.IG_SESSION_JSON }}
-        run: python automation/ig_probe2.py || echo "ig probe rc=$?"
+        run: .venv/bin/python automation/ig_probe.py || echo "ig probe rc=$?"

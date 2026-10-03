@@ -1,1 +1,6 @@
 instagrapi>=3.0
+# browser_cookie3 is only needed where a browser session exists:
+#   * automation/session_from_browser.py (build the IG session from Firefox/Chrome)
+#   * gemini-cli.py --init --browser firefox (self-hosted runners refresh cookies)
+# Both are safe no-ops on GitHub-hosted runners without a browser.
+browser_cookie3>=0.19
