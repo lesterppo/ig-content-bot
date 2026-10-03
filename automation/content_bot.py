@@ -37,6 +37,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
 import urllib.error
 
@@ -104,6 +105,48 @@ _REASONING_RE = re.compile(
 def _LOOKS_LIKE_REASONING(text):
     """Reasoning models sometimes leak their scratchpad into content."""
     return bool(_REASONING_RE.match(text or ""))
+
+
+def _is_throttle(err):
+    e = err.lower()
+    return ("throttl" in e or "429" in err or "too many requests" in e
+            or "please try again" in e or "wait a few minutes" in e)
+
+
+def _validate_session(cl, username):
+    """Lightest-first session check; returns (ok, throttled).
+
+    The bot must not confuse "this datacenter IP is rate-limited" with "the
+    session is dead": the first is transient and must never trigger a password
+    login (that is what gets accounts challenged), the second legitimately
+    needs one. The public web_profile_info endpoint is the one Instagram
+    rate-limits hardest, so try private surfaces first and only accept
+    'invalid' when nothing answers for a non-throttle reason.
+    """
+    cl.username = username
+    surfaces = [
+        ("account_info", cl.account_info),
+        ("timeline_feed", cl.get_timeline_feed),
+        ("user_info_v1", lambda: cl.user_info_by_username_v1(username)),
+    ]
+    throttled = False
+    for round_no in (1, 2):
+        for label, fn in surfaces:
+            try:
+                fn()
+                log(f"session valid via {label}")
+                return True, False
+            except Exception as e:  # noqa: BLE001 - diagnostic ladder
+                err = f"{type(e).__name__}: {e}"
+                if _is_throttle(err):
+                    throttled = True
+                    log(f"  validate {label}: throttled ({err[:100]})")
+                else:
+                    log(f"  validate {label}: {err[:140]}")
+        if throttled and round_no == 1:
+            log("  every surface throttled; waiting 30s for one retry")
+            time.sleep(30)
+    return False, throttled
 
 
 # ---------------------------------------------------------------- NVIDIA
@@ -217,21 +260,18 @@ def make_client(username, password, session_json, session_path):
             log(f"session cache unreadable ({e})")
 
     if loaded:
-        # Verify the session is alive with a light call. If Instagram throttles
-        # the datacenter IP, do NOT fall back to password login (that triggers
-        # challenges) - just report and let the run fail gracefully.
-        try:
-            cl.username = username
-            me = cl.user_info_by_username(username)
-            log(f"session valid as {me.username} (id {me.pk})")
-        except Exception as e:  # noqa: BLE001
-            err = f"{type(e).__name__}: {e}"
-            if "throttl" in err.lower() or "429" in err or "please try again" in err.lower():
-                log(f"Instagram throttled this IP ({err[:120]}). "
+        # Verify the session with private-API surfaces first: the public
+        # endpoint is the one datacenter IPs get 429'd on, and a throttle must
+        # never be mistaken for a dead session (password logins from CI IPs are
+        # what trigger challenges).
+        ok, throttled = _validate_session(cl, username)
+        if not ok:
+            if throttled:
+                log("Instagram throttled this runner IP on every surface. "
                     "Not attempting password login - it would trigger a challenge. "
                     "Retry the run later.")
                 sys.exit(3)
-            log(f"session invalid ({err[:120]}), falling back to login")
+            log("session invalid (no throttle), falling back to login")
             loaded = False
 
     if not loaded:

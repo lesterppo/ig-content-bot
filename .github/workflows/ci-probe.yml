@@ -85,3 +85,24 @@ jobs:
           name: gemini-probe
           path: /tmp/probe/
           if-no-files-found: warn
+
+  instagram:
+    # Which Instagram surfaces can a datacenter runner reach with the stored
+    # session? Read-only; never logs in with the password.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r automation/requirements.txt
+
+      - name: Instagram surface probe
+        env:
+          IG_USERNAME: ${{ secrets.IG_USERNAME }}
+          IG_SESSION_JSON: ${{ secrets.IG_SESSION_JSON }}
+        run: python automation/ig_probe.py || echo "ig probe rc=$?"
