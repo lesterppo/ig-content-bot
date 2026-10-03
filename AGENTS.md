@@ -14,21 +14,24 @@ a free NVIDIA model and replies / skips / escalates. Bookmarks live in
 
 ## 1. Hard constraints — check these BEFORE anything else
 
-**C1 — Instagram writes require a residential/mobile IP.**
-GitHub-hosted runners are Azure IPs; Instagram allows reads there but rejects
-posts, comments and DMs (`login_required`, `Please wait a few minutes`,
-HTTP 400). The bot therefore needs a **self-hosted runner on a residential
-connection**. This is not a bug you can retry around; it was measured on
-2026-10-03 and is documented in the README table.
+**C1 — The Instagram session must be trusted; rebuild it from a browser login.**
+Measured 2026-10-03: a session created with
+`automation/session_from_browser.py --test-write` (browser `sessionid` →
+`login_by_sessionid`) performed reads **and writes** and the live run published
+feed + story from a GitHub-hosted runner (`writes 5/5 ok`). An older stored
+session JSON failed every write from the same runners
+(`login_required` / `Please wait a few minutes` / HTTP 400). So: when writes
+fail, rebuild the session first. Only if a fresh session still fails writes on a
+cloud host should you move to a residential self-hosted runner (step 6b).
 
 **C2 — Web Gemini cookies (GEMINI_SID/GEMINI_TS) rotate on use.**
-A cookie pushed to GitHub secrets goes stale within a run or two. A self-hosted
-runner with a signed-in browser refreshes them at the start of every run (the
-workflow does this automatically). On GitHub-hosted runners you must push fresh
-cookies right before each run.
+A cookie pushed to GitHub secrets goes stale within a run or two (observed: run
+N OK, run N+1 `UNAUTHENTICATED`, refresh fixed it). A self-hosted runner with a
+signed-in browser refreshes them automatically at the start of every run. On
+GitHub-hosted runners you must push fresh cookies right before each run.
 
-If either constraint is violated the run still completes: the image is generated
-and every blocked Instagram action is logged, not crashed.
+If a constraint is violated the run still completes: the image is generated and
+every blocked Instagram action is logged, not crashed.
 
 ## 2. Machine prerequisites
 
@@ -108,21 +111,25 @@ ls -la /tmp/probe   # gemini_img_0.png
 ```sh
 gh secret set NVIDIA_API_KEY -R <owner>/ig-content-bot      # free NVIDIA NIM key
 gh secret set IG_USERNAME    -R <owner>/ig-content-bot      # ppoppo205
-gh variable set CI_RUNNER --body "self-hosted" -R <owner>/ig-content-bot
-
-bash scripts/install_runner.sh <owner>/ig-content-bot
 ```
 
-`install_runner.sh` downloads the runner, registers it (using `gh` for the
-registration token), installs the systemd service when sudo is available, and
-prints the follow-ups. Verify registration:
+6a. **GitHub-hosted runner (works, simplest).** Leave `CI_RUNNER` unset. Fresh
+    images require fresh Gemini cookies before each run (C2), so pair the
+    schedule with something that pushes them (e.g. a cron on the machine that
+    stays signed in to gemini.google.com).
 
-```sh
-gh api repos/<owner>/ig-content-bot/actions/runners \
-  --jq '.runners[] | "\(.name) \(.status) \(.labels | map(.name) | join(","))"'
-```
+6b. **Self-hosted runner (recommended: removes the cookie problem entirely).**
+    Run on a machine with a signed-in browser that is powered on at the cron
+    time:
 
-Expected: one entry, `online`, labels including `self-hosted`.
+    ```sh
+    gh variable set CI_RUNNER --body "self-hosted" -R <owner>/ig-content-bot
+    bash scripts/install_runner.sh <owner>/ig-content-bot
+    gh api repos/<owner>/ig-content-bot/actions/runners \
+      --jq '.runners[] | "\(.name) \(.status) \(.labels | map(.name) | join(","))"'
+    ```
+
+    Expected: one entry, `online`, labels including `self-hosted`.
 
 ## 7. Verify with the CI probe (mandatory)
 
@@ -133,19 +140,22 @@ gh workflow run ci-probe.yml -R <owner>/ig-content-bot
 gh run watch $(gh run list -R <owner>/ig-content-bot -L1 --json databaseId --jq '.[0].databaseId')
 ```
 
-Read the logs and require ALL of:
+Require ALL of:
 
 * **gemini job** — `"status_name": "AVAILABLE"`; an image line
   (`{"ok": true, "imgs": 1, …}`); NVIDIA models printing `OK`.
-* **instagram job** — the last lines:
+  (`UNAUTHENTICATED` here means the cookies are stale → C2.)
+* **instagram job** — the last two lines:
 
   ```
   SUMMARY reads N/M ok, writes K/K ok
   VERDICT: residential-class egress — the bot can post and engage here.
   ```
 
-If the verdict says `datacenter-class egress`, do not schedule anything yet —
-fix the network first (AGENTS C1).
+  With a trusted session this passes even on `ubuntu-latest` (verified
+  2026-10-03). If writes are 0/5 with `login_required` / `Please wait` → the
+  session is not trusted: redo step 4. If it still fails, the egress IP is
+  blocked → step 6b.
 
 ## 8. First live run
 
@@ -154,10 +164,21 @@ gh workflow run content-bot.yml -R <owner>/ig-content-bot \
   -f dry_run=false -f post_to_feed=true -f post_to_story=true -f engage=true
 ```
 
-Then confirm in the log: `image saved to …`, `story published`,
-`feed post published`, `done`, and in the workflow that step *Persist bookmark
-state* pushed a new commit. Confirm the post on Instagram (or via
-`IG_SESSION_JSON` + `automation/ig_probe.py` from a local machine).
+Expected log signature (this exact sequence was verified end-to-end):
+
+```
+session valid via user_medias
+image saved to automation/.today.jpg
+caption: '… #AIgenerated'
+story published
+feed post published
+scanning comments on N recent post(s)
+done
+```
+
+…plus a `content-bot: update bookmarks [skip ci]` commit from the *Persist
+bookmark state* step. Confirm on Instagram that the post + story exist (or check
+locally: `python automation/ig_probe.py` lists the newest posts).
 
 ## 9. Day-2 operations
 
@@ -165,7 +186,7 @@ state* pushed a new commit. Confirm the post on Instagram (or via
 |---|---|
 | `Auth expired` from gemini-cli | Browser session died: sign in at gemini.google.com again, rerun `--init --browser firefox`. On GitHub-hosted runners refresh the secrets instead. |
 | `session valid via user_medias` missing, everything fails | IG session dead → step 4 again (and re-set the secret). |
-| `Please wait a few minutes` / `login_required` on writes | Egress IP became datacenter-class (VPN on? runner moved?) → check the probe verdict. |
+| `Please wait a few minutes` / `login_required` on writes | The session lost trust → rebuild it from a browser login (step 4). If a *fresh* session still fails, the egress IP is the problem (VPN? datacenter host?) → step 6b. |
 | NVIDIA model errors / `410 EOL` | `.venv/bin/python scripts/probe_nvidia.py`, then update `NVIDIA_MODEL`/`NVIDIA_FALLBACK_MODEL` in the workflow. |
 | Runner offline | `cd ~/actions-runner && ./svc.sh status` (or `./run.sh` if installed without sudo); check the machine was on at cron time. |
 | Nothing new handled | Expected when there are no new comments/DMs; `state.json` bookmarks are the source of truth. |

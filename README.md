@@ -19,36 +19,34 @@ Each run:
 
 ## ⚠️ Deployment constraints (the part that decides whether this works)
 
-**1. Instagram only allows writes from residential/mobile IPs.**
+**1. The Instagram session must be "trusted" — rebuild it from a browser login.**
 
-Measured on 2026-10-03 with the same account and the same session JSON:
+Measured on 2026-10-03 with this account:
 
-| Surface | GitHub-hosted runner (Azure IP) | Residential IP |
+| Session source | Reads (`user_medias`) | Writes (post / story / like / DM) |
 |---|---|---|
-| `user_medias` (read own posts) | ✅ works | ✅ works |
-| `media_comments` (read) | ❌ `Please wait a few minutes` | ✅ works |
-| `photo_upload` / story | ❌ `login_required` | ✅ works |
-| `direct_threads` / DM send | ❌ HTTP 400 | ✅ works |
-| like / save | ❌ `We're sorry, but something went wrong` | ✅ works |
+| fresh login via `automation/session_from_browser.py` (browser `sessionid`) | ✅ | ✅ **including from GitHub-hosted runners** — the live run published feed + story and logged `writes 5/5 ok` |
+| older stored session JSON | ✅ | ❌ `login_required`, `Please wait a few minutes`, HTTP 400 on every write |
 
-Retries do not help — Instagram blocks the whole datacenter IP class for this
-account. **The bot must run on a self-hosted runner on a residential
-connection** (`scripts/install_runner.sh`), and the repo variable
-`CI_RUNNER=self-hosted` selects it. On `ubuntu-latest` the workflow still runs,
-generates the image, and logs every Instagram write as failed.
+So the rule is: **when writes fail, rebuild the session from a browser login
+first** (step 4 of AGENTS.md). Only if a genuinely fresh session still fails
+should you suspect the egress IP (VPN on, cloud/datacenter host) — in that case
+deploy a self-hosted runner on a residential connection
+(`scripts/install_runner.sh`) and set the repo variable `CI_RUNNER=self-hosted`.
 
 **2. Web Gemini cookies rotate on use.**
 
 Google rotates `__Secure-1PSIDTS` server-side whenever the cookies are used, so
-a cookie stored as a GitHub secret goes stale within a run or two. Two ways to
-cope:
+a cookie stored as a GitHub secret goes stale within a run or two (verified: a
+live run succeeded, the very next run returned `UNAUTHENTICATED`, and refreshing
+the cookies fixed it). Two ways to cope:
 
-* **Self-hosted runner (recommended):** the workflow runs
-  `gemini-cli.py --init --browser firefox` at the start of every run and reads
-  fresh cookies from the machine's own signed-in Firefox. Nothing to maintain.
+* **Self-hosted runner (removes the problem):** the workflow runs
+  `gemini-cli.py --init --browser firefox` at the start of every run, reading
+  fresh cookies from the machine's own signed-in browser.
 * **GitHub-hosted runner:** push fresh `GEMINI_SID`/`GEMINI_TS` secrets shortly
-  before each run (a cookie harvested hours earlier usually fails with
-  `Auth expired`).
+  before each run; a cookie harvested hours earlier usually fails with
+  `Auth expired`.
 
 **3. NVIDIA free models get retired without notice** (several went 410 EOL on
 2026-10-03). Run `scripts/probe_nvidia.py` when a run fails and update
