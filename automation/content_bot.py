@@ -100,6 +100,24 @@ class SkipRun(Exception):
     """Transient condition (IP throttle, Instagram soft-block): skip, not fail."""
 
 
+# Counters for the run summary shown on the workflow page.
+REPORT = {"story": "not attempted", "feed": "not attempted",
+          "comments_replied": 0, "comments_skipped": 0, "comments_escalated": 0,
+          "dms_replied": 0, "dms_escalated": 0}
+
+
+def warn(msg):
+    """Surface a degraded-but-expected condition on the workflow page."""
+    log(f"::warning::{msg}")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        try:
+            with open(summary, "a") as f:
+                f.write(f"::warning::{msg}\n")
+        except OSError:
+            pass
+
+
 _REASONING_RE = re.compile(
     r"^\s*(here'?s (a|my) thinking process|thinking process|let me think|"
     r"we need to|the user (is|wants|asks)|i need to|analyze (the|user))",
@@ -376,10 +394,13 @@ def process_comments(cl, state, api_key, models, dry_run, max_posts):
                 else:
                     cl.media_comment(mid, f"@{who} {reply}")
                     log("  replied")
+                REPORT["comments_replied"] += 1
             elif verdict.startswith("ESCALATE:"):
                 log(f"  *** NEEDS OWNER REVIEW: {verdict[len('ESCALATE:'):].strip()} ***")
+                REPORT["comments_escalated"] += 1
             else:
                 log("  skipped")
+                REPORT["comments_skipped"] += 1
             cl.delay_range = [2, 4]
         if comments:
             state.setdefault(key, {})["last_seen_id"] = str(comments[-1].pk)
@@ -428,15 +449,18 @@ def process_dms(cl, state, api_key, models, dry_run):
         log(f"[dm:{friend}] drafted: {reply!r}")
         if reply.startswith("ESCALATE:"):
             log(f"[dm:{friend}] *** NEEDS OWNER REVIEW ***")
+            REPORT["dms_escalated"] += 1
             continue
         if len(reply) > 280 or _LOOKS_LIKE_REASONING(reply):
             log(f"[dm:{friend}] reply unusable (len={len(reply)}); skipping send")
+            REPORT["dms_escalated"] += 1
             continue
         if dry_run:
             log(f"[dm:{friend}] DRY RUN - would send: {reply!r}")
         else:
             cl.direct_send(reply, thread_ids=[tid])
             log(f"[dm:{friend}] sent")
+        REPORT["dms_replied"] += 1
 
 
 # ---------------------------------------------------------------- main
@@ -479,11 +503,7 @@ def main():
     try:
         cl = make_client(username, password, session_json, session_path)
     except SkipRun as e:
-        log(str(e))
-        summary = os.environ.get("GITHUB_STEP_SUMMARY")
-        if summary:
-            with open(summary, "a") as f:
-                f.write(f"::warning::{e}\n")
+        warn(str(e))
         return 0
 
     # 1-2. generate + post
@@ -493,6 +513,9 @@ def main():
             gemini_generate_image(IMAGE_PROMPT, img_path)
         except Exception as e:  # noqa: BLE001 - no Gemini auth yet? skip posting
             log(f"image generation skipped: {type(e).__name__}: {e}")
+            warn("Image generation failed (Gemini cookies stale or model error) — "
+                 "this run will not post. Refresh GEMINI_SID/GEMINI_TS or run "
+                 "automation/gemini-cli.py --init --browser firefox on the runner.")
             img_path = None
         if img_path:
             caption = nvidia_ask(api_key, models, CAPTION_SYSTEM,
@@ -504,15 +527,21 @@ def main():
                     _ig_retry(lambda: cl.photo_upload_to_story(img_path), "story upload",
                               attempts=2, delays=(30,))
                     log("story published")
+                    REPORT["story"] = "published"
                 except Exception as e:  # noqa: BLE001 - feed post must still try
                     log(f"story upload FAILED: {type(e).__name__}: {str(e)[:200]}")
+                    REPORT["story"] = f"FAILED ({type(e).__name__})"
+                    warn(f"Story upload failed: {type(e).__name__}: {str(e)[:120]}")
             if do_feed:
                 try:
                     _ig_retry(lambda: cl.photo_upload(img_path, caption=caption),
                               "feed upload", attempts=2, delays=(30,))
                     log("feed post published")
+                    REPORT["feed"] = "published"
                 except Exception as e:  # noqa: BLE001
                     log(f"feed upload FAILED: {type(e).__name__}: {str(e)[:200]}")
+                    REPORT["feed"] = f"FAILED ({type(e).__name__})"
+                    warn(f"Feed upload failed: {type(e).__name__}: {str(e)[:120]}")
     elif dry_run and (do_feed or do_story):
         log("DRY RUN - would generate image and post to "
             f"{'story ' if do_story else ''}{'feed' if do_feed else ''}")
@@ -538,7 +567,16 @@ def main():
     if summary:
         with open(summary, "a") as f:
             f.write("## Content bot run\n\n")
-            f.write(f"Dry run: **{dry_run}**\n")
+            f.write(f"| | |\n|---|---|\n")
+            f.write(f"| dry run | **{dry_run}** |\n")
+            f.write(f"| story | {REPORT['story']} |\n")
+            f.write(f"| feed | {REPORT['feed']} |\n")
+            f.write(f"| comments replied / skipped / escalated | "
+                    f"{REPORT['comments_replied']} / {REPORT['comments_skipped']} / "
+                    f"{REPORT['comments_escalated']} |\n")
+            f.write(f"| DMs replied / escalated | {REPORT['dms_replied']} / "
+                    f"{REPORT['dms_escalated']} |\n")
+    log(f"report: {REPORT}")
     log("done")
     return 0
 
