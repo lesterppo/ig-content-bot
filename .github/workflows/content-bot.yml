@@ -54,7 +54,11 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r automation/requirements.txt
+        run: |
+          pip install -r automation/requirements.txt
+          # hermes-gem-cli deps: web Gemini via cookies (no API key)
+          pip install gemini-webapi loguru
+          chmod +x automation/gemini-cli.py
 
       - name: Restore Instagram session cache
         uses: actions/cache@v4
@@ -83,7 +87,9 @@ jobs:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           NVIDIA_MODEL: z-ai/glm-5.3-flash
           NVIDIA_FALLBACK_MODEL: nvidia/nemotron-3-super-120b-a12b
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_SID: ${{ secrets.GEMINI_SID }}
+          GEMINI_TS: ${{ secrets.GEMINI_TS }}
+          GEMINI_CLI: ${{ github.workspace }}/automation/gemini-cli.py
           # Manual dispatch may override; scheduled runs go LIVE.
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
           POST_TO_FEED: ${{ inputs.post_to_feed || 'true' }}
