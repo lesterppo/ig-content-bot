@@ -64,7 +64,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: automation/.session.json
-          key: ig-session-${{ hashFiles('automation/requirements.txt') }}
+          # Rolling key: a cache HIT skips the save, so a fixed key would
+          # freeze the first snapshot forever. restore-keys picks the newest.
+          key: ig-session-${{ github.run_id }}
+          restore-keys: |
+            ig-session-
 
       - name: Restore Instagram session from secret
         # The verified session lives in IG_SESSION_JSON so runners avoid
@@ -85,8 +89,10 @@ jobs:
           IG_PASSWORD: ${{ secrets.IG_PASSWORD }}
           IG_SESSION_JSON: ${{ secrets.IG_SESSION_JSON }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          NVIDIA_MODEL: z-ai/glm-5.3-flash
-          NVIDIA_FALLBACK_MODEL: nvidia/nemotron-3-super-120b-a12b
+          # Free NIM models (probed 2026-10-03). Comma-separated lists allowed;
+          # nemotron-3-super/mistral-nemotron/deepseek-v4-flash are now 410 EOL.
+          NVIDIA_MODEL: z-ai/glm-5.3-flash,openai/gpt-oss-20b
+          NVIDIA_FALLBACK_MODEL: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
           GEMINI_SID: ${{ secrets.GEMINI_SID }}
           GEMINI_TS: ${{ secrets.GEMINI_TS }}
           GEMINI_CLI: ${{ github.workspace }}/automation/gemini-cli.py

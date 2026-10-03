@@ -35,6 +35,7 @@ Exit codes: 0 ok (even when nothing new), 2 login failure.
 import base64
 import json
 import os
+import re
 import sys
 import urllib.request
 import urllib.error
@@ -92,6 +93,17 @@ Output ONLY the reply text (or the ESCALATE line). No quotes, no preamble."""
 
 def log(msg):
     print(msg, flush=True)
+
+
+_REASONING_RE = re.compile(
+    r"^\s*(here'?s (a|my) thinking process|thinking process|let me think|"
+    r"we need to|the user (is|wants|asks)|i need to|analyze (the|user))",
+    re.IGNORECASE)
+
+
+def _LOOKS_LIKE_REASONING(text):
+    """Reasoning models sometimes leak their scratchpad into content."""
+    return bool(_REASONING_RE.match(text or ""))
 
 
 # ---------------------------------------------------------------- NVIDIA
@@ -345,8 +357,9 @@ def process_dms(cl, state, api_key, models, dry_run):
         if reply.startswith("ESCALATE:"):
             log(f"[dm:{friend}] *** NEEDS OWNER REVIEW ***")
             continue
-        if len(reply) > 280:
-            reply = "lol noted \U0001f602"
+        if len(reply) > 280 or _LOOKS_LIKE_REASONING(reply):
+            log(f"[dm:{friend}] reply unusable (len={len(reply)}); skipping send")
+            continue
         if dry_run:
             log(f"[dm:{friend}] DRY RUN - would send: {reply!r}")
         else:
@@ -368,10 +381,14 @@ def main():
         log("missing NVIDIA_API_KEY")
         return 1
 
-    models = list(dict.fromkeys([
-        os.environ.get("NVIDIA_MODEL", "z-ai/glm-5.3-flash"),
-        os.environ.get("NVIDIA_FALLBACK_MODEL", "nvidia/nemotron-3-super-120b-a12b"),
-    ]))
+    raw = [os.environ.get("NVIDIA_MODEL", "z-ai/glm-5.3-flash"),
+           os.environ.get("NVIDIA_FALLBACK_MODEL", "openai/gpt-oss-20b")]
+    models = []
+    for chunk in raw:
+        for m in (chunk or "").split(","):
+            m = m.strip()
+            if m and m not in models:
+                models.append(m)
     dry_run = os.environ.get("DRY_RUN", "true").lower() == "true"
     do_feed = os.environ.get("POST_TO_FEED", "true").lower() == "true"
     do_story = os.environ.get("POST_TO_STORY", "true").lower() == "true"
