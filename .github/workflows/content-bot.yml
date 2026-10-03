@@ -1,0 +1,101 @@
+name: Content bot
+
+# Daily: generate a portrait with Gemini, post it to Story + Feed,
+# then screen new comments/DMs and reply via a free NVIDIA model.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (log what would be posted/sent, act on nothing)"
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      post_to_feed:
+        description: "Publish the generated photo to the Feed"
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      post_to_story:
+        description: "Publish the generated photo to the Story"
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      engage:
+        description: "Screen and reply to new comments/DMs"
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+  schedule:
+    # 01:30 UTC = 09:30 HKT, daily
+    - cron: "30 1 * * *"
+
+concurrency:
+  group: content-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # to commit the bookmark state file back to the repo
+
+jobs:
+  content-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r automation/requirements.txt
+
+      - name: Restore Instagram session cache
+        uses: actions/cache@v4
+        with:
+          path: automation/.session.json
+          key: ig-session-${{ hashFiles('automation/requirements.txt') }}
+
+      - name: Restore Instagram session from secret
+        # The verified session lives in IG_SESSION_JSON so runners avoid
+        # password logins (which trigger challenges from datacenter IPs).
+        env:
+          IG_SESSION_JSON: ${{ secrets.IG_SESSION_JSON }}
+        run: |
+          if [ -n "$IG_SESSION_JSON" ]; then
+            printf '%s' "$IG_SESSION_JSON" > automation/.session.json
+            echo "session restored from IG_SESSION_JSON secret"
+          else
+            echo "no IG_SESSION_JSON secret; using cache or password login"
+          fi
+
+      - name: Run content bot
+        env:
+          IG_USERNAME: ${{ secrets.IG_USERNAME }}
+          IG_PASSWORD: ${{ secrets.IG_PASSWORD }}
+          IG_SESSION_JSON: ${{ secrets.IG_SESSION_JSON }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NVIDIA_MODEL: z-ai/glm-5.3-flash
+          NVIDIA_FALLBACK_MODEL: nvidia/nemotron-3-super-120b-a12b
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Manual dispatch may override; scheduled runs go LIVE.
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          POST_TO_FEED: ${{ inputs.post_to_feed || 'true' }}
+          POST_TO_STORY: ${{ inputs.post_to_story || 'true' }}
+          ENGAGE: ${{ inputs.engage || 'true' }}
+        run: python automation/content_bot.py
+
+      - name: Persist bookmark state
+        run: |
+          git config user.name "content-bot"
+          git config user.email "content-bot@users.noreply.github.com"
+          git add automation/state.json
+          git diff --cached --quiet || git commit -m "content-bot: update bookmarks [skip ci]"
+          git pull --rebase origin main
+          git push
