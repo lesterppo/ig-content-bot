@@ -132,7 +132,13 @@ def _LOOKS_LIKE_REASONING(text):
 def _is_throttle(err):
     e = err.lower()
     return ("throttl" in e or "429" in err or "too many requests" in e
-            or "please try again" in e or "wait a few minutes" in e)
+            or "please try again" in e or "wait a few minutes" in e
+            or "login_required" in e)
+
+
+# Set once Instagram makes clear the account/IP is in a cooldown: the rest of
+# the run then skips Instagram calls instead of adding to the pile.
+_THROTTLED = {"hit": False}
 
 
 def _validate_session(cl, username):
@@ -293,7 +299,7 @@ def make_client(username, password, session_json, session_path):
             if throttled or os.environ.get("GITHUB_ACTIONS"):
                 # Datacenter IPs routinely get soft-blocked. Nothing to do but
                 # wait: skip this run (warning, not failure) and retry tomorrow.
-                raise SkipRun("Instagram is rate-limiting this runner IP; skipping "
+                raise SkipRun("Instagram is rate-limiting this account/IP; skipping "
                               "this run (no password login attempted - it would "
                               "trigger a challenge).")
             log("session invalid (no throttle), falling back to login")
@@ -331,6 +337,8 @@ def _ig_retry(fn, label, attempts=3, delays=(20, 60)):
 
     Datacenter IPs get 'Please wait a few minutes' / 429 spikes; a single
     attempt turns those into a dead scan, three attempts usually get through.
+    Once a throttle survives the retries the whole run is marked as throttled:
+    continuing would only deepen the account cooldown.
     """
     last = None
     for i in range(attempts):
@@ -345,6 +353,8 @@ def _ig_retry(fn, label, attempts=3, delays=(20, 60)):
                 time.sleep(wait)
             else:
                 log(f"  {label}: {err[:140]}")
+    if last is not None and _is_throttle(f"{type(last).__name__}: {last}"):
+        _THROTTLED["hit"] = True
     if last is None:  # unreachable: attempts >= 1 always sets it
         raise RuntimeError(f"{label}: no attempt ran")
     raise last
@@ -352,6 +362,9 @@ def _ig_retry(fn, label, attempts=3, delays=(20, 60)):
 
 def process_comments(cl, state, api_key, models, dry_run, max_posts):
     """Screen new comments on recent posts; reply to genuine ones."""
+    if _THROTTLED["hit"]:
+        log("comment scan skipped: Instagram is in a cooldown this run")
+        return
     me = cl.user_id
     medias = cl.user_medias(me, amount=max_posts)
     log(f"scanning comments on {len(medias)} recent post(s)")
@@ -408,6 +421,9 @@ def process_comments(cl, state, api_key, models, dry_run, max_posts):
 
 def process_dms(cl, state, api_key, models, dry_run):
     """Reply to new DMs in 1:1 threads (adapts the dm-autoreply flow)."""
+    if _THROTTLED["hit"]:
+        log("DM scan skipped: Instagram is in a cooldown this run")
+        return
     threads = _ig_retry(lambda: cl.direct_threads(amount=20), "direct_threads")
     for t in threads:
         if len(t.users) != 1:
@@ -547,7 +563,13 @@ def main():
             f"{'story ' if do_story else ''}{'feed' if do_feed else ''}")
 
     # 3-4. engage
-    if do_engage:
+    if do_engage and _THROTTLED["hit"]:
+        # uploads (or the session check) already hit a throttle: back off, the
+        # account needs rest, not more calls. Next run picks the work back up.
+        log("engagement skipped this run: Instagram cooldown detected earlier")
+        warn("Instagram is throttling this account/IP — engagement skipped, "
+             "nothing was sent. The next run will retry.")
+    elif do_engage:
         try:
             process_comments(cl, state, api_key, models, dry_run, max_posts)
         except Exception as e:  # noqa: BLE001 - engagement must not kill the run
@@ -569,6 +591,7 @@ def main():
             f.write("## Content bot run\n\n")
             f.write(f"| | |\n|---|---|\n")
             f.write(f"| dry run | **{dry_run}** |\n")
+            f.write(f"| Instagram cooldown | {_THROTTLED['hit']} |\n")
             f.write(f"| story | {REPORT['story']} |\n")
             f.write(f"| feed | {REPORT['feed']} |\n")
             f.write(f"| comments replied / skipped / escalated | "

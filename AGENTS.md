@@ -205,6 +205,7 @@ locally: `python automation/ig_probe.py` lists the newest posts).
 | `Auth expired` from gemini-cli | Browser session died: sign in at gemini.google.com again, rerun `--init --browser firefox`. On GitHub-hosted runners refresh the secrets instead. |
 | `session valid via user_medias` missing, everything fails | IG session dead → step 4 again (and re-set the secret). |
 | `Please wait a few minutes` / `login_required` on writes | The session lost trust → rebuild it from a browser login (step 4). If a *fresh* session still fails, the egress IP is the problem (VPN? datacenter host?) → step 6b. |
+| Those errors appear on **reads too**, from every machine | Account-level cooldown (Instagram rate-limits the *account* after bursts — several uploads/probes in one day will do it). Do nothing: the bot skips the run with a warning and the next scheduled run picks the work back up. Do not retry-hammer — it prolongs the cooldown. |
 | NVIDIA model errors / `410 EOL` | `.venv/bin/python scripts/probe_nvidia.py`, then update `NVIDIA_MODEL`/`NVIDIA_FALLBACK_MODEL` in the workflow. |
 | Runner offline | `cd ~/actions-runner && ./svc.sh status` (or `./run.sh` if installed without sudo); check the machine was on at cron time. |
 | Nothing new handled | Expected when there are no new comments/DMs; `state.json` bookmarks are the source of truth. |
