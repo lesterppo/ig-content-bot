@@ -205,13 +205,21 @@ def make_client(username, password, session_json, session_path):
             log(f"session cache unreadable ({e})")
 
     if loaded:
-        # Verify the session is alive without a password round-trip.
+        # Verify the session is alive with a light call. If Instagram throttles
+        # the datacenter IP, do NOT fall back to password login (that triggers
+        # challenges) - just report and let the run fail gracefully.
         try:
             cl.username = username
             me = cl.user_info_by_username(username)
             log(f"session valid as {me.username} (id {me.pk})")
         except Exception as e:  # noqa: BLE001
-            log(f"session invalid ({type(e).__name__}), falling back to login")
+            err = f"{type(e).__name__}: {e}"
+            if "throttl" in err.lower() or "429" in err or "please try again" in err.lower():
+                log(f"Instagram throttled this IP ({err[:120]}). "
+                    "Not attempting password login - it would trigger a challenge. "
+                    "Retry the run later.")
+                sys.exit(3)
+            log(f"session invalid ({err[:120]}), falling back to login")
             loaded = False
 
     if not loaded:
