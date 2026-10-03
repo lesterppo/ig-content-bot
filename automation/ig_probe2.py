@@ -70,6 +70,18 @@ def main():
     }), attempts=1)
     step("user_info_by_username_v1", lambda: cl.user_info_by_username_v1(username),
          attempts=1)
+
+    # write-capability probes: instant-undo actions on the owner's own post plus
+    # a DM to himself. Never a public comment (that would be visible to others).
+    if medias:
+        pk = medias[0].pk
+        step("WRITE.media_like", lambda: cl.media_like(pk), attempts=1)
+        step("WRITE.media_unlike", lambda: cl.media_unlike(pk), attempts=1)
+        step("WRITE.media_save", lambda: cl.media_save(pk), attempts=1)
+        step("WRITE.media_unsave", lambda: cl.media_unsave(pk), attempts=1)
+        if cl.user_id:
+            step("WRITE.direct_send(self)", lambda: cl.direct_send(
+                "probe: ignore", user_ids=[int(cl.user_id)]), attempts=1)
     return 0
 
 
