@@ -460,11 +460,17 @@ def main():
             caption = caption.strip()[:2000] + "\n\n#AIgenerated"
             log(f"caption: {caption!r}")
             if do_story:
-                cl.photo_upload_to_story(img_path)
-                log("story published")
+                try:
+                    cl.photo_upload_to_story(img_path)
+                    log("story published")
+                except Exception as e:  # noqa: BLE001 - feed post must still try
+                    log(f"story upload FAILED: {type(e).__name__}: {str(e)[:200]}")
             if do_feed:
-                cl.photo_upload(img_path, caption=caption)
-                log("feed post published")
+                try:
+                    cl.photo_upload(img_path, caption=caption)
+                    log("feed post published")
+                except Exception as e:  # noqa: BLE001
+                    log(f"feed upload FAILED: {type(e).__name__}: {str(e)[:200]}")
     elif dry_run and (do_feed or do_story):
         log("DRY RUN - would generate image and post to "
             f"{'story ' if do_story else ''}{'feed' if do_feed else ''}")

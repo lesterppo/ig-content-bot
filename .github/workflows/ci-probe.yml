@@ -105,4 +105,4 @@ jobs:
         env:
           IG_USERNAME: ${{ secrets.IG_USERNAME }}
           IG_SESSION_JSON: ${{ secrets.IG_SESSION_JSON }}
-        run: python automation/ig_probe.py || echo "ig probe rc=$?"
+        run: python automation/ig_probe2.py || echo "ig probe rc=$?"
