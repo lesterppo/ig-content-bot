@@ -24,11 +24,18 @@ session JSON failed every write from the same runners
 fail, rebuild the session first. Only if a fresh session still fails writes on a
 cloud host should you move to a residential self-hosted runner (step 6b).
 
-**C2 — Web Gemini cookies (GEMINI_SID/GEMINI_TS) rotate on use.**
-A cookie pushed to GitHub secrets goes stale within a run or two (observed: run
-N OK, run N+1 `UNAUTHENTICATED`, refresh fixed it). A self-hosted runner with a
-signed-in browser refreshes them automatically at the start of every run. On
-GitHub-hosted runners you must push fresh cookies right before each run.
+**C2 — Web Gemini cookies rotate; the workflows renew them automatically.**
+Google rotates `__Secure-1PSIDTS` server-side, and
+`accounts.google.com/RotateCookies` issues a fresh one only when called with the
+**full `.google.com` jar** (SID+TS alone → 429). Each run therefore: restores the
+jar from `actions/cache` (`gemini-jar-*`) → `automation/refresh_cookies.py`
+picks the newest authenticating candidate (browser → cache → secrets), rotates
+when needed and exports `GEMINI_SID`/`GEMINI_TS` → the winning jar is cached
+again. Anchor secret: **`GEMINI_COOKIES_JSON`** (full jar). Re-harvest only if
+both the cache and the secrets have gone stale (e.g. a week with no runs):
+`automation/harvest_cookies.py --browser firefox` → `gh secret set
+GEMINI_COOKIES_JSON`. A self-hosted runner additionally reads its own browser,
+which makes the chain unnecessary.
 
 If a constraint is violated the run still completes: the image is generated and
 every blocked Instagram action is logged, not crashed.
@@ -87,16 +94,20 @@ two steps use it.
 
 ## 5. Gemini session (same machine, same browser)
 
-Log in at `https://gemini.google.com/` in the browser, then:
+Log in at `https://gemini.google.com/` in the browser, then harvest the cookie
+jar and the session:
 
 ```sh
+.venv/bin/python automation/harvest_cookies.py --browser firefox > /tmp/jar.json
+gh secret set GEMINI_COOKIES_JSON -R <owner>/ig-content-bot < /tmp/jar.json
 .venv/bin/python automation/gemini-cli.py --init --browser firefox
 .venv/bin/python automation/gemini-cli.py --account-status
 ```
 
-Expected: `{"ok": true, "action": "init", "auth_src": "browser:firefox", …}` then
-an `--account-status` JSON whose `status_name` is `AVAILABLE` and whose `emails`
-lists the intended account.
+Expected: `harvest_cookies.py` reports `kept N: [...]` (SID present), and
+`--account-status` returns `status_name: AVAILABLE` with the intended account in
+`emails`. The `GEMINI_COOKIES_JSON` jar is the anchor the CI chain rotates from;
+`GEMINI_SID`/`GEMINI_TS` are optional cold fallbacks (same values, two cookies).
 
 Quick image sanity check (writes a PNG, ~20 s):
 
@@ -104,6 +115,13 @@ Quick image sanity check (writes a PNG, ~20 s):
 mkdir -p /tmp/probe && .venv/bin/python automation/gemini-cli.py --img \
   "editorial test portrait, one subject" --save-images /tmp/probe -o /tmp/probe/out
 ls -la /tmp/probe   # gemini_img_0.png
+```
+
+Verify the rotating chain without a browser (what CI does):
+
+```sh
+.venv/bin/python automation/refresh_cookies.py --out /tmp/chain.jar.json
+# expect: "winner: ..." and, on a rerun, "[cache] status=AVAILABLE"
 ```
 
 ## 6. Secrets, variables, runner

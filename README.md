@@ -34,19 +34,26 @@ should you suspect the egress IP (VPN on, cloud/datacenter host) — in that cas
 deploy a self-hosted runner on a residential connection
 (`scripts/install_runner.sh`) and set the repo variable `CI_RUNNER=self-hosted`.
 
-**2. Web Gemini cookies rotate on use.**
+**2. Web Gemini cookies: a self-refreshing chain keeps them alive in CI.**
 
-Google rotates `__Secure-1PSIDTS` server-side whenever the cookies are used, so
-a cookie stored as a GitHub secret goes stale within a run or two (verified: a
-live run succeeded, the very next run returned `UNAUTHENTICATED`, and refreshing
-the cookies fixed it). Two ways to cope:
+Google rotates `__Secure-1PSIDTS` server-side, so a cookie stored as a GitHub
+secret goes stale. `accounts.google.com/RotateCookies` issues a fresh one when
+called with the **full `.google.com` jar** (SID plus the account cookies — SID+TS
+alone gets 429). The workflows use that:
 
-* **Self-hosted runner (removes the problem):** the workflow runs
-  `gemini-cli.py --init --browser firefox` at the start of every run, reading
-  fresh cookies from the machine's own signed-in browser.
-* **GitHub-hosted runner:** push fresh `GEMINI_SID`/`GEMINI_TS` secrets shortly
-  before each run; a cookie harvested hours earlier usually fails with
-  `Auth expired`.
+* `actions/cache` stores the jar between runs (`gemini-jar-*`, newest wins);
+* `automation/refresh_cookies.py` gathers candidates (browser → cache → secrets),
+  probes each with the CLI, rotates when none authenticates, exports
+  `GEMINI_SID`/`GEMINI_TS` for the run, and writes the winning jar back;
+* secrets: **`GEMINI_COOKIES_JSON`** (full jar — build it with
+  `automation/harvest_cookies.py --browser firefox`) plus `GEMINI_SID`/`GEMINI_TS`
+  as a cold fallback.
+
+So a scheduled run on `ubuntu-latest` keeps itself supplied. Only if the cache
+is evicted *and* the secrets have gone stale (e.g. nobody ran the bot for a week)
+does a human need to re-harvest: `harvest_cookies.py` → `gh secret set
+GEMINI_COOKIES_JSON`. Self-hosted runners additionally refresh straight from
+their own browser, which makes the chain unnecessary.
 
 **3. NVIDIA free models get retired without notice** (several went 410 EOL on
 2026-10-03). Run `scripts/probe_nvidia.py` when a run fails and update
@@ -69,8 +76,9 @@ the cookies fixed it). Two ways to cope:
 | `IG_PASSWORD` | secret | Password — fallback only; password logins get challenged |
 | `IG_SESSION_JSON` | secret | instagrapi session JSON (preferred). Build with `automation/session_from_browser.py` |
 | `NVIDIA_API_KEY` | secret | NVIDIA NIM key (free tier) for captions/replies |
-| `GEMINI_SID` | secret | Google `__Secure-1PSID` cookie (web Gemini) |
-| `GEMINI_TS` | secret | Google `__Secure-1PSIDTS` cookie (web Gemini) |
+| `GEMINI_COOKIES_JSON` | secret | **Full** `.google.com` cookie jar (anchor for the rotating chain) — `automation/harvest_cookies.py` |
+| `GEMINI_SID` | secret | Google `__Secure-1PSID` (cold fallback) |
+| `GEMINI_TS` | secret | Google `__Secure-1PSIDTS` (cold fallback) |
 
 ## Verify a deployment
 
