@@ -383,18 +383,23 @@ def main():
 
     # 1-2. generate + post
     if (do_feed or do_story) and not dry_run:
-        img_path = os.path.join(os.path.dirname(state_path), ".today.jpg")
-        gemini_generate_image(IMAGE_PROMPT, img_path)
-        caption = nvidia_ask(api_key, models, CAPTION_SYSTEM,
-                             "Write the caption for today's glamour portrait post.")
-        caption = caption.strip()[:2000] + "\n\n#AIgenerated"
-        log(f"caption: {caption!r}")
-        if do_story:
-            cl.photo_upload_to_story(img_path)
-            log("story published")
-        if do_feed:
-            cl.photo_upload(img_path, caption=caption)
-            log("feed post published")
+        try:
+            img_path = os.path.join(os.path.dirname(state_path), ".today.jpg")
+            gemini_generate_image(IMAGE_PROMPT, img_path)
+        except Exception as e:  # noqa: BLE001 - no Gemini auth yet? skip posting
+            log(f"image generation skipped: {type(e).__name__}: {e}")
+            img_path = None
+        if img_path:
+            caption = nvidia_ask(api_key, models, CAPTION_SYSTEM,
+                                 "Write the caption for today's glamour portrait post.")
+            caption = caption.strip()[:2000] + "\n\n#AIgenerated"
+            log(f"caption: {caption!r}")
+            if do_story:
+                cl.photo_upload_to_story(img_path)
+                log("story published")
+            if do_feed:
+                cl.photo_upload(img_path, caption=caption)
+                log("feed post published")
     elif dry_run and (do_feed or do_story):
         log("DRY RUN - would generate image and post to "
             f"{'story ' if do_story else ''}{'feed' if do_feed else ''}")
