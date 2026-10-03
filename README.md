@@ -22,7 +22,8 @@ Each run:
 | `IG_PASSWORD` | Instagram password (fallback; prefer `IG_SESSION_JSON`) |
 | `IG_SESSION_JSON` | Pre-authenticated instagrapi session — avoids password logins from CI IPs, which trigger challenges |
 | `NVIDIA_API_KEY` | NVIDIA API key (free tier) for reply/caption drafting |
-| `GEMINI_API_KEY` | Gemini API key (AI Studio, free tier) for image generation |
+| `GEMINI_SID` | Google `__Secure-1PSID` cookie for hermes-gem-cli web Gemini |
+| `GEMINI_TS` | Google `__Secure-1PSIDTS` cookie for hermes-gem-cli web Gemini |
 
 ## Safety
 
