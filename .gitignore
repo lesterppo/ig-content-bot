@@ -1,3 +1,4 @@
 .session.json
 .today.jpg
 __pycache__/
+.gemini_cookies.json

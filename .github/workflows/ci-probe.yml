@@ -33,18 +33,33 @@ jobs:
         continue-on-error: true
         run: .venv/bin/python automation/gemini-cli.py --init --browser firefox
 
-      - name: Gemini account status
+      - name: Restore Gemini cookie jar (rotating chain)
+        uses: actions/cache/restore@v4
+        with:
+          path: .gemini_cookies.json
+          key: gemini-jar-${{ github.run_id }}
+          restore-keys: |
+            gemini-jar-
+
+      - name: Refresh Gemini cookies for this run
+        continue-on-error: true
         env:
           GEMINI_SID: ${{ secrets.GEMINI_SID }}
           GEMINI_TS: ${{ secrets.GEMINI_TS }}
-        run: |
-          echo "env cookies present: SID=${#GEMINI_SID} chars TS=${#GEMINI_TS} chars"
-          .venv/bin/python automation/gemini-cli.py --account-status || echo "account-status rc=$?"
+          GEMINI_COOKIES_JSON: ${{ secrets.GEMINI_COOKIES_JSON }}
+        run: .venv/bin/python automation/refresh_cookies.py --out .gemini_cookies.json --emit-env
+
+      - name: Save Gemini cookie jar (rotating chain)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .gemini_cookies.json
+          key: gemini-jar-${{ github.run_id }}
+
+      - name: Gemini account status
+        run: .venv/bin/python automation/gemini-cli.py --account-status || echo "account-status rc=$?"
 
       - name: Gemini image generation
-        env:
-          GEMINI_SID: ${{ secrets.GEMINI_SID }}
-          GEMINI_TS: ${{ secrets.GEMINI_TS }}
         run: |
           mkdir -p /tmp/probe
           .venv/bin/python automation/gemini-cli.py --img "editorial test portrait, one subject" \

@@ -67,20 +67,42 @@ jobs:
           .venv/bin/pip install --quiet --upgrade pip
           .venv/bin/pip install --quiet -r automation/requirements.txt
           # hermes-gem-cli deps: web Gemini via cookies (no API key)
-          .venv/bin/pip install --quiet gemini-webapi loguru
+          .venv/bin/pip install --quiet gemini-webapi loguru curl_cffi
           chmod +x automation/gemini-cli.py
 
       - name: Refresh Gemini cookies from the local browser (self-hosted only)
         # Google rotates __Secure-1PSIDTS every time the cookies are used, so a
-        # stored secret goes stale within a run or two. A self-hosted runner
-        # whose Firefox/Chrome is signed in to gemini.google.com can re-read
-        # them at the start of every run, which removes the staleness problem
-        # entirely. On GitHub-hosted runners this step fails harmlessly and the
-        # GEMINI_SID/GEMINI_TS secrets are used instead.
+        # stored secret goes stale. A self-hosted runner whose Firefox/Chrome is
+        # signed in to gemini.google.com supplies a fresh jar here; GitHub-hosted
+        # runners fall through to the rotating chain below.
         continue-on-error: true
-        run: |
-          .venv/bin/pip install --quiet browser_cookie3 || true
-          .venv/bin/python automation/gemini-cli.py --init --browser firefox
+        run: .venv/bin/python automation/gemini-cli.py --init --browser firefox
+
+      - name: Restore Gemini cookie jar (rotating chain)
+        uses: actions/cache/restore@v4
+        with:
+          path: .gemini_cookies.json
+          key: gemini-jar-${{ github.run_id }}
+          restore-keys: |
+            gemini-jar-
+
+      - name: Refresh Gemini cookies for this run
+        # picks the newest authenticating jar (browser -> cache -> secrets) and
+        # rotates __Secure-1PSIDTS when needed; exports GEMINI_SID/GEMINI_TS to
+        # $GITHUB_ENV for the run step below
+        continue-on-error: true
+        env:
+          GEMINI_SID: ${{ secrets.GEMINI_SID }}
+          GEMINI_TS: ${{ secrets.GEMINI_TS }}
+          GEMINI_COOKIES_JSON: ${{ secrets.GEMINI_COOKIES_JSON }}
+        run: .venv/bin/python automation/refresh_cookies.py --out .gemini_cookies.json --emit-env
+
+      - name: Save Gemini cookie jar (rotating chain)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .gemini_cookies.json
+          key: gemini-jar-${{ github.run_id }}
 
       - name: Restore Instagram session cache
         uses: actions/cache@v4
@@ -115,8 +137,8 @@ jobs:
           # nemotron-3-super/mistral-nemotron/deepseek-v4-flash are 410 EOL.
           NVIDIA_MODEL: z-ai/glm-5.3-flash,openai/gpt-oss-20b
           NVIDIA_FALLBACK_MODEL: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
-          GEMINI_SID: ${{ secrets.GEMINI_SID }}
-          GEMINI_TS: ${{ secrets.GEMINI_TS }}
+          # GEMINI_SID / GEMINI_TS come from the "Refresh Gemini cookies" step
+          # ($GITHUB_ENV); the cookie chain keeps them fresh without a browser.
           GEMINI_CLI: ${{ github.workspace }}/automation/gemini-cli.py
           # Manual dispatch may override; scheduled runs go LIVE.
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
