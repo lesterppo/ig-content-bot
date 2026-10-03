@@ -18,7 +18,8 @@ Env vars:
   NVIDIA_API_KEY              NVIDIA API key (GitHub Secret)
   NVIDIA_MODEL                default: z-ai/glm-5.3-flash (free)
   NVIDIA_FALLBACK_MODEL       default: nvidia/nemotron-3-super-120b-a12b (free)
-  GEMINI_API_KEY              Gemini API key for image generation (AI Studio)
+  GEMINI_SID / GEMINI_TS       Google session cookies for hermes-gem-cli
+                              (GitHub Secrets; __Secure-1PSID / __Secure-1PSIDTS)
   DRY_RUN                     "true"/"false" (default "true" - log only)
   STATE_PATH                  default: automation/state.json
   SESSION_PATH                default: automation/.session.json (git-ignored)
@@ -135,31 +136,37 @@ def nvidia_ask(api_key, models, system, user_text):
 
 # ---------------------------------------------------------------- Gemini image
 
-def gemini_generate_image(api_key, prompt, out_path, timeout=180):
-    """Generate a JPEG via the Gemini API. Returns out_path."""
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{GEMINI_MODEL}:generateContent?key={api_key}")
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseModalities": ["IMAGE"]},
-    }
-    req = urllib.request.Request(
-        url, data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
+def gemini_generate_image(prompt, out_path, timeout=180):
+    """Generate a JPEG via hermes-gem-cli (web Gemini, cookie auth).
+    Requires GEMINI_SID/GEMINI_TS env vars or a cached session.
+    Returns out_path."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    cli = os.environ.get("GEMINI_CLI") or shutil.which("gemini-cli")
+    if not cli or not os.path.exists(cli):
+        raise RuntimeError("gemini-cli not found (set GEMINI_CLI)")
+    tmpdir = tempfile.mkdtemp(prefix="gemini-img-")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Gemini API HTTP {e.code}: {e.read()[:300]}")
-    for cand in data.get("candidates", []):
-        for part in cand.get("content", {}).get("parts", []):
-            blob = part.get("inlineData") or {}
-            if blob.get("data"):
-                with open(out_path, "wb") as f:
-                    f.write(base64.b64decode(blob["data"]))
-                log(f"image saved to {out_path}")
-                return out_path
-    raise RuntimeError("Gemini returned no image data")
+        # --img saves images to DIR/gemini_img_*.png ; -o sets output base
+        cmd = [sys.executable, cli, "--img", prompt,
+               "--save-images", tmpdir, "-o", os.path.join(tmpdir, "out")]
+        log(f"  running: gemini-cli --img ...")
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if r.returncode != 0:
+            raise RuntimeError(f"gemini-cli failed: {r.stderr[-500:]}")
+        # find the generated image
+        imgs = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir)
+                if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
+        if not imgs:
+            raise RuntimeError("gemini-cli produced no image file")
+        imgs.sort(key=os.path.getmtime, reverse=True)
+        shutil.copyfile(imgs[0], out_path)
+        log(f"image saved to {out_path}")
+        return out_path
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------- Instagram
@@ -345,7 +352,6 @@ def main():
     username = os.environ.get("IG_USERNAME", "")
     password = os.environ.get("IG_PASSWORD", "")
     api_key = os.environ.get("NVIDIA_API_KEY", "")
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
     session_json = os.environ.get("IG_SESSION_JSON", "")
     if not username:
         log("missing IG_USERNAME")
@@ -377,21 +383,18 @@ def main():
 
     # 1-2. generate + post
     if (do_feed or do_story) and not dry_run:
-        if not gemini_key:
-            log("missing GEMINI_API_KEY - skipping generation/posting")
-        else:
-            img_path = os.path.join(os.path.dirname(state_path), ".today.jpg")
-            gemini_generate_image(gemini_key, IMAGE_PROMPT, img_path)
-            caption = nvidia_ask(api_key, models, CAPTION_SYSTEM,
-                                 "Write the caption for today's glamour portrait post.")
-            caption = caption.strip()[:2000] + "\n\n#AIgenerated"
-            log(f"caption: {caption!r}")
-            if do_story:
-                cl.photo_upload_to_story(img_path)
-                log("story published")
-            if do_feed:
-                cl.photo_upload(img_path, caption=caption)
-                log("feed post published")
+        img_path = os.path.join(os.path.dirname(state_path), ".today.jpg")
+        gemini_generate_image(IMAGE_PROMPT, img_path)
+        caption = nvidia_ask(api_key, models, CAPTION_SYSTEM,
+                             "Write the caption for today's glamour portrait post.")
+        caption = caption.strip()[:2000] + "\n\n#AIgenerated"
+        log(f"caption: {caption!r}")
+        if do_story:
+            cl.photo_upload_to_story(img_path)
+            log("story published")
+        if do_feed:
+            cl.photo_upload(img_path, caption=caption)
+            log("feed post published")
     elif dry_run and (do_feed or do_story):
         log("DRY RUN - would generate image and post to "
             f"{'story ' if do_story else ''}{'feed' if do_feed else ''}")
