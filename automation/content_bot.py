@@ -308,6 +308,30 @@ def _thread_id(tid):
         return tid
 
 
+def _ig_retry(fn, label, attempts=3, delays=(20, 60)):
+    """Retry an Instagram call through transient throttles.
+
+    Datacenter IPs get 'Please wait a few minutes' / 429 spikes; a single
+    attempt turns those into a dead scan, three attempts usually get through.
+    """
+    last = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001 - retry ladder
+            last = e
+            err = f"{type(e).__name__}: {e}"
+            if i + 1 < attempts:
+                wait = delays[i] if i < len(delays) else delays[-1]
+                log(f"  {label}: {err[:110]} -> retry in {wait}s")
+                time.sleep(wait)
+            else:
+                log(f"  {label}: {err[:140]}")
+    if last is None:  # unreachable: attempts >= 1 always sets it
+        raise RuntimeError(f"{label}: no attempt ran")
+    raise last
+
+
 def process_comments(cl, state, api_key, models, dry_run, max_posts):
     """Screen new comments on recent posts; reply to genuine ones."""
     me = cl.user_id
@@ -317,7 +341,8 @@ def process_comments(cl, state, api_key, models, dry_run, max_posts):
         mid = str(media.pk)
         key = f"comment:{mid}"
         last_seen = state.get(key, {}).get("last_seen_id")
-        comments = cl.media_comments(mid, amount=30)
+        comments = _ig_retry(lambda: cl.media_comments(mid, amount=30),
+                             f"comments on {media.code}")
         comments = sorted(comments, key=lambda c: c.created_at_utc or 0)
         if last_seen is None:
             if comments:
@@ -362,7 +387,7 @@ def process_comments(cl, state, api_key, models, dry_run, max_posts):
 
 def process_dms(cl, state, api_key, models, dry_run):
     """Reply to new DMs in 1:1 threads (adapts the dm-autoreply flow)."""
-    threads = cl.direct_threads(amount=20)
+    threads = _ig_retry(lambda: cl.direct_threads(amount=20), "direct_threads")
     for t in threads:
         if len(t.users) != 1:
             continue
@@ -476,13 +501,15 @@ def main():
             log(f"caption: {caption!r}")
             if do_story:
                 try:
-                    cl.photo_upload_to_story(img_path)
+                    _ig_retry(lambda: cl.photo_upload_to_story(img_path), "story upload",
+                              attempts=2, delays=(30,))
                     log("story published")
                 except Exception as e:  # noqa: BLE001 - feed post must still try
                     log(f"story upload FAILED: {type(e).__name__}: {str(e)[:200]}")
             if do_feed:
                 try:
-                    cl.photo_upload(img_path, caption=caption)
+                    _ig_retry(lambda: cl.photo_upload(img_path, caption=caption),
+                              "feed upload", attempts=2, delays=(30,))
                     log("feed post published")
                 except Exception as e:  # noqa: BLE001
                     log(f"feed upload FAILED: {type(e).__name__}: {str(e)[:200]}")
